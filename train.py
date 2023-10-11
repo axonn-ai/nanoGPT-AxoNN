@@ -326,6 +326,9 @@ t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
 running_mfu = -1.0
+
+torch.distributed.barrier()
+
 while True:
 
     # determine and set the learning rate for this iteration
@@ -380,7 +383,7 @@ while True:
     # clip the gradient
     if grad_clip != 0.0:
         scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip / G_intra_r / G_intra_c)
     # step the optimizer and scaler if training in fp16
     scaler.step(optimizer)
     scaler.update()
