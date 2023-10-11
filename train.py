@@ -26,7 +26,6 @@ import numpy as np
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
-from fast_shampoo import Shampoo, ShampooHyperParams, LayerwiseGrafting
 from axonn import axonn as ax
 
 from model import GPTConfig, GPT
@@ -63,7 +62,6 @@ weight_decay = 1e-1
 beta1 = 0.9
 beta2 = 0.95
 grad_clip = 1.0 # clip gradients at this value, or disable if == 0.0
-precondition=False
 # learning rate decay settings
 decay_lr = True # whether to decay the learning rate
 warmup_iters = 2000 # how many steps to warm up for
@@ -236,39 +234,7 @@ model.to(device)
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 
 # optimizer
-
-if precondition:
-    # start with all of the candidate parameters
-    param_dict = {pn: p for pn, p in model.named_parameters()}
-    # filter out those that do not require grad
-    param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
-    # create optim groups. Any parameters that is 2D will be weight decayed, otherwise no.
-    # i.e. all weight tensors in matmuls + embeddings decay, all biases and layernorms don't.
-    decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
-    nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
-    optim_groups = [
-        {'params': decay_params, 'weight_decay': weight_decay},
-        {'params': nodecay_params, 'weight_decay': 0.0}
-    ]
-    
-    hyperparams = ShampooHyperParams(
-          graft_type=LayerwiseGrafting.ADAM, #parse_graft(config["graft_type"]),
-          weight_decay=weight_decay, #config["weight_decay"],  #TUNE (1, 1e-1,, 1e-2, 1e-3, 1e-4, 1e-5)
-          preconditioning_compute_steps=10, #TUNE (1, 2, 4, 8, 16, 32)
-          damping_factor=1e-6, #config["damping_factor"], #TUNE (0, 1e-2, 1e-4, 1e-6, 1e-8)
-          block_size=1024,
-          nesterov=False,
-          beta2=1.0
-        )
-
-    optimizer = Shampoo(
-          optim_groups,
-          lr=learning_rate,
-          hyperparams=hyperparams,
-          fast_approx=True, #config["fast_approx"],
-    )
-else:
-    optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
+optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
 if init_from == 'resume':
     optimizer.load_state_dict(checkpoint['optimizer'])
 
@@ -327,7 +293,6 @@ local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
 running_mfu = -1.0
 
-torch.distributed.barrier()
 
 while True:
 
@@ -383,7 +348,7 @@ while True:
     # clip the gradient
     if grad_clip != 0.0:
         scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip / G_intra_r / G_intra_c)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
     # step the optimizer and scaler if training in fp16
     scaler.step(optimizer)
     scaler.update()
