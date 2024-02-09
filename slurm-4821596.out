@@ -1,0 +1,11 @@
+Defaulting to user installation because normal site-packages is not writeable
+Requirement already satisfied: mpi4py in /cvmfs/hpcsw.umd.edu/spack-software/2022.06.15/linux-rhel8-zen2/gcc-9.4.0/python-3.8.12-m4izbfupod72qgxj4xogsl2vmivojcew/lib/python3.8/site-packages (3.1.2)
+WARNING: You are using pip version 21.1.1; however, version 24.0 is available.
+You should consider upgrading via the '/cvmfs/hpcsw.umd.edu/spack-software/2022.06.15/linux-rhel8-zen2/gcc-9.4.0/python-3.8.12-m4izbfupod72qgxj4xogsl2vmivojcew/bin/python3.8 -m pip install --upgrade pip' command.
+python3 train.py
+G_data=1 x G_intra_r=1 x G_intra_c=1
+tokens per iteration will be: 491,520
+Traceback (most recent call last):
+  File "train.py", line 155, in <module>
+    ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
+AttributeError: module 'torch' has no attribute 'amp'
