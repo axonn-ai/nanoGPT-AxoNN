@@ -15,8 +15,8 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from torch.nn import init as init
-
-from axonn.intra_layer import Linear
+from torch.utils.checkpoint import checkpoint
+from axonn import axonn as ax
 
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
@@ -36,10 +36,10 @@ class CausalSelfAttention(nn.Module):
         super().__init__()
         assert config.n_embd % config.n_head == 0
         # key, query, value projections for all heads, but in a batch
-        self.c_attn = Linear(config.n_embd, 
+        self.c_attn = nn.Linear(config.n_embd, 
                 3 * config.n_embd)
         # output projection
-        self.c_proj = Linear(config.n_embd, 
+        self.c_proj = nn.Linear(config.n_embd, 
                 config.n_embd)
 
         # regularization
@@ -86,11 +86,11 @@ class MLP(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.c_fc    = Linear(config.n_embd, 
+        self.c_fc    = nn.Linear(config.n_embd, 
                 4 * config.n_embd) 
                 
         self.gelu    = nn.GELU()
-        self.c_proj  = Linear(4 * config.n_embd, 
+        self.c_proj  = nn.Linear(4 * config.n_embd, 
                 config.n_embd)
 
         self.dropout = nn.Dropout(config.dropout)
@@ -125,6 +125,7 @@ class GPTConfig:
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    gradient_checkpointing: bool = False
 
 class GPT(nn.Module):
 
@@ -132,8 +133,8 @@ class GPT(nn.Module):
         super().__init__()
         assert config.vocab_size is not None
         assert config.block_size is not None
-        assert config.bias, "axonn doesn't support lack of bias"
         self.config = config
+        print(self.config.gradient_checkpointing)
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
@@ -147,7 +148,7 @@ class GPT(nn.Module):
         # "UserWarning: functional_call was passed multiple values for tied weights.
         # This behavior is deprecated and will be an error in future versions"
         # not 100% sure what this is, so far seems to be harmless. TODO investigate
-        self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
+        #self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
 
         # init all weights
         self.apply(self._init_weights)
@@ -166,10 +167,14 @@ class GPT(nn.Module):
         The token embeddings would too, except due to the parameter sharing these
         params are actually used as weights in the final layer, so we include them.
         """
+        tp_param_count = 0
+        for p in self.parameters():
+            if getattr(p, "is_tensor_parallel", False):
+                tp_param_count += p.numel()
         n_params = sum(p.numel() for p in self.parameters())
         if non_embedding:
-            n_params -= self.transformer.wpe.weight.numel()
-        return n_params
+            n_params -= self.transformer.wpe.weight.numel()        
+        return n_params + tp_param_count * (ax.config.G_intra-1)
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -190,7 +195,10 @@ class GPT(nn.Module):
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
-            x = block(x)
+            if self.config.gradient_checkpointing:
+                x = checkpoint(block, x)
+            else:
+                x = block(x)
         x = self.transformer.ln_f(x)
 
         if targets is not None:
@@ -302,7 +310,7 @@ class GPT(nn.Module):
         """ estimate model flops utilization (MFU) in units of A100 bfloat16 peak FLOPS """
         # first estimate the number of flops we do per iteration.
         # see PaLM paper Appendix B as ref: https://arxiv.org/abs/2204.02311
-        N = self.get_num_params()
+        N = self.get_num_params() 
         cfg = self.config
         L, H, Q, T = cfg.n_layer, cfg.n_head, cfg.n_embd//cfg.n_head, cfg.block_size
         flops_per_token = 6*N + 12*L*H*Q*T
@@ -312,6 +320,8 @@ class GPT(nn.Module):
         flops_achieved = flops_per_iter * (1.0/dt) # per second
         flops_promised = 312e12 # A100 GPU bfloat16 peak flops is 312 TFLOPS
         mfu = flops_achieved / flops_promised
+        if self.config.gradient_checkpointing:
+            mfu *= 4/3
         return mfu
 
     @torch.no_grad()
