@@ -11,7 +11,7 @@ export HF_TRANSFORMERS_CACHE="${HF_HOME}"
 export HF_DATASETS_CACHE="${HF_HOME}/datasets"
 
 module load pytorch/2.0.1
-source /pscratch/sd/s/ssingh37/axonn_nanogpt/bin/activate
+source ${SCRATCH}/axonn_nanogpt/bin/activate
 
 NNODES=$SLURM_JOB_NUM_NODES
 GPUS=$(( NNODES * 4 ))
