@@ -377,11 +377,13 @@ while True:
 
 #prof.__exit__(None, None, None)
 if os.environ.get("WITH_PROFILER") == "1":
-    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+    #print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
     output_dir = os.getenv("OUTPUT_DIR")
     profiler_output_dir = os.path.join(output_dir, "torch_profiler")
-    if not os.path.exists(profiler_output_dir):
+    if master_process and not os.path.exists(profiler_output_dir):
         os.makedirs(profiler_output_dir)
+
+    torch.distributed.barrier()
 
     rank = torch.distributed.get_rank()
     trace_file = os.path.join(profiler_output_dir, f"profiler_trace_{rank}.json")
